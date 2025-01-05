@@ -1,4 +1,4 @@
-# S3 Bulk Version Restore Tool
+# S3 Version Restore Tool
 
 ⚠️ **IMPORTANT: PROOF OF CONCEPT STATUS** ⚠️
 
@@ -60,7 +60,7 @@ export S3_SECRET_ACCESS_KEY='your_secret_access_key'
 ## Usage
 
 ```bash
-python s3-bulk-restore.py BUCKET_NAME [options]
+python s3-version-restore.py BUCKET_NAME [options]
 ```
 
 ### Options
@@ -75,25 +75,25 @@ python s3-bulk-restore.py BUCKET_NAME [options]
 
 ```bash
 # List available buckets
-python s3-bulk-restore.py --list-buckets --endpoint-url https://s3.us-west-004.backblazeb2.com
+python s3-version-restore.py --list-buckets --endpoint-url https://s3.us-west-004.backblazeb2.com
 
 # Do a dry run showing what would be restored from a bucket
-python s3-bulk-restore.py my-bucket
+python s3-version-restore.py my-bucket
 
 # Restore all files in a bucket
-python s3-bulk-restore.py my-bucket --execute
+python s3-version-restore.py my-bucket --execute
 
 # Show what would be restored from a specific folder
-python s3-bulk-restore.py my-bucket --path docs/reports/
+python s3-version-restore.py my-bucket --path docs/reports/
 
 # Show detailed information about files to be restored
-python s3-bulk-restore.py my-bucket -v
+python s3-version-restore.py my-bucket -v
 
 # Restore only files from a specific folder
-python s3-bulk-restore.py my-bucket --path docs/reports/ --execute
+python s3-version-restore.py my-bucket --path docs/reports/ --execute
 
 # Use with a specific S3-compatible endpoint
-python s3-bulk-restore.py my-bucket --endpoint-url https://gateway.us1.storjshare.io
+python s3-version-restore.py my-bucket --endpoint-url https://gateway.us1.storjshare.io
 ```
 
 ## How It Works
@@ -130,7 +130,7 @@ The script:
   ```bash
   export S3_ACCESS_KEY_ID='AKIAXXXXXXXXXXXXXXXX'
   export S3_SECRET_ACCESS_KEY='XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
-  python s3-bulk-restore.py my-bucket-name
+  python s3-version-restore.py my-bucket-name
   ```
 
 ### Backblaze B2
@@ -142,7 +142,7 @@ The script:
   ```bash
   export S3_ACCESS_KEY_ID='000xxxxxxxxxxxxx0000000001'
   export S3_SECRET_ACCESS_KEY='K000xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
-  python s3-bulk-restore.py my-bucket --endpoint-url https://s3.us-west-000.backblazeb2.com
+  python s3-version-restore.py my-bucket --endpoint-url https://s3.us-west-000.backblazeb2.com
   ```
 
 ### Storj
@@ -153,7 +153,7 @@ The script:
   ```bash
   export S3_ACCESS_KEY_ID='jw....................................'
   export S3_SECRET_ACCESS_KEY='jk............................................'
-  python s3-bulk-restore.py my-bucket --endpoint-url https://gateway.storjshare.io
+  python s3-version-restore.py my-bucket --endpoint-url https://gateway.storjshare.io
   ```
 
 ## Contributing
