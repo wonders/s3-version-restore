@@ -7,17 +7,30 @@ from botocore.exceptions import ClientError
 
 def initialize_s3(endpoint_url=None):
     """Initialize S3 client with credentials and optional endpoint"""
+    # Early credential validation
+    access_key = os.environ.get('S3_ACCESS_KEY_ID')
+    secret_key = os.environ.get('S3_SECRET_ACCESS_KEY')
+
+    if not access_key or not secret_key:
+        print("Error: Missing S3 credentials. Please set S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY environment variables.")
+        sys.exit(1)
+
     try:
         session = boto3.session.Session()
         s3_client = session.client(
             's3',
             endpoint_url=endpoint_url,
-            aws_access_key_id=os.environ.get('S3_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('S3_SECRET_ACCESS_KEY')
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key
         )
+        # Test credentials
+        s3_client.list_buckets()
         return s3_client
+    except ClientError as e:
+        print(f"Authorization error: Invalid credentials or insufficient permissions")
+        sys.exit(1)
     except Exception as e:
-        print(f"Authorization error: {e}")
+        print(f"Connection error: {e}")
         sys.exit(1)
 
 def list_buckets(s3_client):
@@ -148,7 +161,7 @@ def get_latest_live_versions(versions):
     return latest_versions, total_size
 
 def restore_versions(s3_client, bucket_name, latest_versions, dry_run=True, verbose=False):
-    """Restore the latest versions of files by copying them over the delete marker"""
+    """Restore the latest versions of files by deleting the delete marker"""
     restored = 0
     failed = 0
 
@@ -162,15 +175,11 @@ def restore_versions(s3_client, bucket_name, latest_versions, dry_run=True, verb
 
         try:
             print(f"Restoring: {file_name}")
-            # Copy the object over itself to make it the latest version
-            s3_client.copy_object(
+            # Delete the delete marker to expose the previous version
+            s3_client.delete_object(
                 Bucket=bucket_name,
                 Key=file_name,
-                CopySource={
-                    'Bucket': bucket_name,
-                    'Key': file_name,
-                    'VersionId': version['version_id']
-                }
+                VersionId=version['version_id']  # This will be the delete marker's version ID
             )
             print(f"Successfully restored: {file_name}")
             restored += 1
