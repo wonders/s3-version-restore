@@ -7,7 +7,6 @@ from botocore.exceptions import ClientError
 
 def initialize_s3(endpoint_url=None):
     """Initialize S3 client with credentials and optional endpoint"""
-    # Early credential validation
     access_key = os.environ.get('S3_ACCESS_KEY_ID')
     secret_key = os.environ.get('S3_SECRET_ACCESS_KEY')
 
@@ -23,8 +22,7 @@ def initialize_s3(endpoint_url=None):
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key
         )
-        # Test credentials
-        s3_client.list_buckets()
+        s3_client.list_buckets()  # Test credentials
         return s3_client
     except ClientError as e:
         print(f"Authorization error: Invalid credentials or insufficient permissions")
@@ -57,7 +55,7 @@ def check_versioning_status(s3_client, bucket_name):
             print("Warning: Bucket versioning is suspended. Only existing versions are available.")
             return True
         elif not status:
-            print("Error: Bucket versioning is not enabled. Cannot restore previous versions.")
+            print("Error: Bucket versioning is not enabled. Cannot restore versions.")
             return False
         else:
             print(f"Error: Unexpected versioning status: {status}")
@@ -70,7 +68,9 @@ def check_versioning_status(s3_client, bucket_name):
 
 def format_size(size_in_bytes):
     """Format file size in bytes to human readable format"""
-    if size_in_bytes >= 1024 * 1024:  # MB range
+    if size_in_bytes >= 1024 * 1024 * 1024:  # GB range
+        return f"{size_in_bytes / (1024 * 1024 * 1024):.2f} GB"
+    elif size_in_bytes >= 1024 * 1024:  # MB range
         return f"{size_in_bytes / (1024 * 1024):.2f} MB"
     elif size_in_bytes >= 1024:  # KB range
         return f"{size_in_bytes / 1024:.2f} KB"
@@ -81,51 +81,65 @@ def format_timestamp(timestamp):
     """Convert timestamp to readable date"""
     return timestamp.strftime('%Y-%m-%d %H:%M:%S')
 
-def get_file_versions(s3_client, bucket_name, prefix=None):
-    """Get all file versions from the bucket"""
-    versions = {}
+def get_restorable_files(s3_client, bucket_name, prefix=None, restore_previous=False):
+    """Get files that can be restored based on the selected mode
+
+    Args:
+        s3_client: Boto3 S3 client
+        bucket_name: Name of the bucket
+        prefix: Optional path prefix to filter files
+        restore_previous: If True, look for files with multiple versions to restore previous version
+                         If False, look for files with delete markers
+
+    Returns:
+        Dictionary of files that can be restored with their version information
+    """
+    restorable_files = {}
     params = {'Bucket': bucket_name}
     if prefix:
         params['Prefix'] = prefix
 
     try:
-        while True:
-            response = s3_client.list_object_versions(**params)
+        paginator = s3_client.get_paginator('list_object_versions')
 
-            # Process regular versions
-            for version in response.get('Versions', []):
-                key = version['Key']
-                if key not in versions:
-                    versions[key] = []
-                versions[key].append({
-                    'version_id': version['VersionId'],
-                    'file_name': key,
-                    'timestamp': version['LastModified'],
-                    'size': version['Size'],
-                    'is_latest': version['IsLatest'],
-                    'is_delete_marker': False
-                })
+        for page in paginator.paginate(**params):
+            if restore_previous:
+                # Process regular versions for previous version restoration
+                for version in page.get('Versions', []):
+                    key = version['Key']
+                    if version['IsLatest']:
+                        # Start tracking this file if we find a latest version
+                        restorable_files[key] = {
+                            'current_version_id': version['VersionId'],
+                            'current_size': version['Size'],
+                            'current_modified': version['LastModified']
+                        }
+                    elif key in restorable_files and 'previous_version_id' not in restorable_files[key]:
+                        # Add previous version info if we haven't found one yet
+                        restorable_files[key].update({
+                            'previous_version_id': version['VersionId'],
+                            'previous_size': version['Size'],
+                            'previous_modified': version['LastModified']
+                        })
+            else:
+                # Process delete markers for undelete operation
+                for marker in page.get('DeleteMarkers', []):
+                    key = marker['Key']
+                    if marker['IsLatest']:
+                        restorable_files[key] = {
+                            'delete_marker_id': marker['VersionId'],
+                            'deleted_at': marker['LastModified']
+                        }
 
-            # Process delete markers
-            for marker in response.get('DeleteMarkers', []):
-                key = marker['Key']
-                if key not in versions:
-                    versions[key] = []
-                versions[key].append({
-                    'version_id': marker['VersionId'],
-                    'file_name': key,
-                    'timestamp': marker['LastModified'],
-                    'size': 0,
-                    'is_latest': marker['IsLatest'],
-                    'is_delete_marker': True
-                })
-
-            if not response.get('IsTruncated'):
-                break
-
-            # Update pagination markers for next request
-            params['KeyMarker'] = response.get('NextKeyMarker')
-            params['VersionIdMarker'] = response.get('NextVersionIdMarker')
+                # Find the latest real version before the delete marker
+                for version in page.get('Versions', []):
+                    key = version['Key']
+                    if key in restorable_files and not version['IsLatest']:
+                        restorable_files[key].update({
+                            'previous_version_id': version['VersionId'],
+                            'size': version['Size'],
+                            'last_modified': version['LastModified']
+                        })
 
     except ClientError as e:
         if e.response['Error']['Code'] == 'NotImplemented':
@@ -133,53 +147,52 @@ def get_file_versions(s3_client, bucket_name, prefix=None):
             sys.exit(1)
         raise
 
-    return versions
+    # Clean up entries that don't have all required information
+    if restore_previous:
+        return {k: v for k, v in restorable_files.items() if 'previous_version_id' in v}
+    else:
+        return {k: v for k, v in restorable_files.items() if 'previous_version_id' in v}
 
-def get_latest_live_versions(versions):
-    """Find the latest non-deleted version of each file, but only for deleted files"""
-    latest_versions = {}
-    total_size = 0
+def restore_versions(s3_client, bucket_name, files_to_restore, restore_previous=False, dry_run=True, verbose=False):
+    """Restore files by either removing delete markers or current versions
 
-    for file_name, file_versions in versions.items():
-        # Sort versions by timestamp, newest first
-        sorted_versions = sorted(file_versions,
-                               key=lambda x: x['timestamp'],
-                               reverse=True)
-
-        # Check if the most recent version is a delete marker
-        if not sorted_versions or not sorted_versions[0]['is_delete_marker']:
-            # File is currently live, skip it
-            continue
-
-        # Find the latest version before deletion
-        for version in sorted_versions:
-            if not version['is_delete_marker']:
-                latest_versions[file_name] = version
-                total_size += version['size']
-                break
-
-    return latest_versions, total_size
-
-def restore_versions(s3_client, bucket_name, latest_versions, dry_run=True, verbose=False):
-    """Restore the latest versions of files by deleting the delete marker"""
+    Args:
+        s3_client: Boto3 S3 client
+        bucket_name: Name of the bucket
+        files_to_restore: Dictionary of files to restore with their version information
+        restore_previous: If True, restore previous versions by removing current versions
+                         If False, restore by removing delete markers
+        dry_run: If True, only show what would be done
+        verbose: If True, show detailed information about each file
+    """
     restored = 0
     failed = 0
 
-    for file_name, version in latest_versions.items():
+    for file_name, info in files_to_restore.items():
         if dry_run:
             if verbose:
-                print(f"Would restore: {file_name}")
-                print(f"  Last modified: {format_timestamp(version['timestamp'])}")
-                print(f"  Size: {format_size(version['size'])}")
+                print(f"\nWould restore: {file_name}")
+                if restore_previous:
+                    print(f"  Current version:")
+                    print(f"    Modified: {format_timestamp(info['current_modified'])}")
+                    print(f"    Size: {format_size(info['current_size'])}")
+                    print(f"  Previous version:")
+                    print(f"    Modified: {format_timestamp(info['previous_modified'])}")
+                    print(f"    Size: {format_size(info['previous_size'])}")
+                else:
+                    print(f"  Deleted at: {format_timestamp(info['deleted_at'])}")
+                    print(f"  Original size: {format_size(info['size'])}")
+                    print(f"  Last modified: {format_timestamp(info['last_modified'])}")
             continue
 
         try:
             print(f"Restoring: {file_name}")
-            # Delete the delete marker to expose the previous version
+            # Remove either the current version or delete marker
+            version_id = info['current_version_id'] if restore_previous else info['delete_marker_id']
             s3_client.delete_object(
                 Bucket=bucket_name,
                 Key=file_name,
-                VersionId=version['version_id']  # This will be the delete marker's version ID
+                VersionId=version_id
             )
             print(f"Successfully restored: {file_name}")
             restored += 1
@@ -196,41 +209,73 @@ def restore_versions(s3_client, bucket_name, latest_versions, dry_run=True, verb
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Restore deleted files from an S3-compatible bucket',
+        description='S3 Version Recovery Tool - Requires selecting ONE recovery mode:\n'
+                   '1. Remove delete markers to restore deleted files\n'
+                   '2. Remove current versions to restore previous versions',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
+Operation Modes:
+    This tool requires explicitly choosing one of two operation modes:
+
+    1. Delete Marker Removal (--restore-deleted):
+       - Recovers files by removing delete markers
+       - Exposes the most recent version before deletion
+       - Note: Will restore ALL deleted files, including those
+         intentionally deleted before any unwanted changes
+
+    2. Version Reversion (--restore-previous-versions):
+       - PERMANENTLY REMOVES current versions of files
+       - Makes previous versions become the current versions
+       - Cannot be undone - current versions are permanently deleted
+       - Only use if current versions are confirmed unwanted
+       - Consider backing up current versions first
+
 Examples:
     # List available buckets
     %(prog)s --list-buckets --endpoint-url https://s3.us-west-004.backblazeb2.com
 
-    # Do a dry run showing what would be restored from a bucket
-    %(prog)s my-bucket
+    # Show deleted files that could be restored
+    %(prog)s my-bucket --restore-deleted
 
-    # Restore all files in a bucket
-    %(prog)s my-bucket --execute
+    # Show files that could be reverted to previous versions
+    %(prog)s my-bucket --restore-previous-versions
 
-    # Use with a custom S3-compatible endpoint
-    %(prog)s my-bucket --endpoint-url https://s3.us-west-004.backblazeb2.com
+    # Remove delete markers to restore files
+    %(prog)s my-bucket --restore-deleted --execute
 
-    # Show what would be restored from a specific folder
-    %(prog)s my-bucket --path docs/reports/
+    # PERMANENTLY remove current versions to restore previous versions
+    %(prog)s my-bucket --restore-previous-versions --execute
 
-    # Show detailed information about files to be restored
-    %(prog)s my-bucket -v
+    # Use with path prefix (works with either mode)
+    %(prog)s my-bucket --restore-deleted --path docs/reports/
+    %(prog)s my-bucket --restore-previous-versions --path docs/reports/
 
-    # Restore only files from a specific folder
-    %(prog)s my-bucket --path docs/reports/ --execute
+    # Show detailed information (works with either mode)
+    %(prog)s my-bucket --restore-deleted -v
+    %(prog)s my-bucket --restore-previous-versions -v
 
 Notes:
     - The script requires S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY environment variables
     - Bucket must have versioning enabled
     - Path is optional and uses prefix matching
-    - By default, runs in dry-run mode showing what would be restored
-    - Use --execute to actually perform the restore
+    - Default is dry-run mode; use --execute to perform operations
     - Use -v or --verbose to see detailed information about each file
+    - Version reversion PERMANENTLY DELETES current versions
 ''')
 
-    parser.add_argument(
+    # Create mutually exclusive group for mode selection
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument(
+        '--restore-deleted',
+        action='store_true',
+        help='Restore files by removing delete markers (recovers intentionally deleted files)'
+    )
+    mode_group.add_argument(
+        '--restore-previous-versions',
+        action='store_true',
+        help='Revert to previous versions by PERMANENTLY REMOVING current versions (cannot be undone)'
+    )
+    mode_group.add_argument(
         '--list-buckets',
         action='store_true',
         help='List all available buckets and exit'
@@ -267,10 +312,9 @@ Notes:
 
     args = parser.parse_args()
 
-    # If no arguments provided or missing required args, show help and exit
-    if len(sys.argv) == 1 or (not args.list_buckets and not args.bucket_name):
-        parser.print_help()
-        sys.exit(0)
+    # Validate required arguments
+    if not args.list_buckets and not args.bucket_name:
+        parser.error("Bucket name is required unless using --list-buckets")
 
     print("Initializing S3 client...")
     s3_client = initialize_s3(args.endpoint_url)
@@ -280,41 +324,79 @@ Notes:
         return
 
     try:
-        # Test bucket access
         s3_client.head_bucket(Bucket=args.bucket_name)
         print(f"Connected to bucket: {args.bucket_name}")
     except ClientError as e:
         print(f"Error accessing bucket: {e}")
         sys.exit(1)
 
-    # Check versioning status
     if not check_versioning_status(s3_client, args.bucket_name):
         sys.exit(1)
 
     if args.path:
         print(f"Using path prefix: {args.path}")
 
-    print("Getting file versions...")
-    versions = get_file_versions(s3_client, args.bucket_name, args.path)
+    if args.restore_deleted:
+        print("\nMODE: Restoring deleted files by removing delete markers")
+        print("Note: This will restore ALL deleted files, including those deleted intentionally")
+    else:
+        print("\nMODE: Version Reversion - Will PERMANENTLY remove current versions")
+        print("WARNING: This operation CANNOT be undone!")
+        print("Current versions will be PERMANENTLY DELETED")
 
-    if not versions:
-        print("No files found in bucket" + (f" at path: {args.path}" if args.path else "."))
+    print("\nFinding restorable files...")
+    files = get_restorable_files(
+        s3_client,
+        args.bucket_name,
+        args.path,
+        restore_previous=args.restore_previous_versions
+    )
+
+    if not files:
+        mode_str = "deleted files" if args.restore_deleted else "files with previous versions"
+        print(f"No {mode_str} found in bucket" + (f" at path: {args.path}" if args.path else "."))
         return
 
-    print("Finding latest live versions...")
-    latest_versions, total_size = get_latest_live_versions(versions)
+    print(f"\nFound {len(files)} files to process")
 
-    print(f"\nFound {len(latest_versions)} files to restore")
-    print(f"Total restore size: {format_size(total_size)}")
+    if args.restore_previous_versions:
+        total_current_size = sum(info['current_size'] for info in files.values())
+        total_previous_size = sum(info['previous_size'] for info in files.values())
+        print(f"Total size of current versions to be DELETED: {format_size(total_current_size)}")
+        print(f"Total size of previous versions to restore: {format_size(total_previous_size)}")
+    else:
+        total_size = sum(info['size'] for info in files.values())
+        print(f"Total size of files to restore: {format_size(total_size)}")
 
     if args.execute:
-        confirm = input("\nAre you sure you want to restore these files? (yes/no): ")
-        if confirm.lower() != 'yes':
-            print("Aborting restore.")
-            return
+        if args.restore_previous_versions:
+            print("\n" + "!"*80)
+            print("WARNING: DESTRUCTIVE OPERATION - VERSION REVERSION")
+            print("This will PERMANENTLY DELETE the current version of all listed files!")
+            print("Previous versions will become the current versions.")
+            print("This operation CANNOT be undone!")
+            print("Make sure you have backed up current versions if needed.")
+            print("!"*80 + "\n")
+            confirm = input("Type 'PERMANENTLY DELETE VERSIONS' to proceed: ")
+            if confirm != "PERMANENTLY DELETE VERSIONS":
+                print("Operation aborted.")
+                return
+        else:
+            print("\nThis will remove delete markers to restore the most recent version of each file.")
+            print("Note: This includes files that may have been intentionally deleted.")
+            confirm = input("Continue with restoration? (yes/no): ")
+            if confirm.lower() != 'yes':
+                print("Operation aborted.")
+                return
 
-    restore_versions(s3_client, args.bucket_name, latest_versions,
-                    dry_run=not args.execute, verbose=args.verbose)
+    restore_versions(
+        s3_client,
+        args.bucket_name,
+        files,
+        restore_previous=args.restore_previous_versions,
+        dry_run=not args.execute,
+        verbose=args.verbose
+    )
 
 if __name__ == '__main__':
     main()
