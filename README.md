@@ -1,169 +1,47 @@
-# S3 Version Restore Tool
+# S3 Version Recovery Reference
 
-## Before You Begin
+## The Scenario
 
-This tool has been tested with various file sizes and quantities, but like any software dealing with file operations, edge cases may exist. Always:
+When files become inaccessible (whether through compromised credentials, accidental deletion, or backup system issues), proper object lock configuration can prevent permanent data loss by preserving previous versions. However, tools like TrueNAS Cloud Sync can't directly access these previous versions, creating a recovery challenge.
 
-- Test in a non-production environment first
-- Use the dry-run mode to preview changes
-- Maintain separate backups of critical data
-- Verify results after operation
+This guide provides approaches to recover access to versioned files in S3-compatible storage by restoring from a point in time or restoring visibility to deleted files.
 
-## Overview
+## Community Origins
 
-A Python script for restoring deleted files from S3-compatible buckets that have versioning enabled by removing delete markers. It uses server-side operations to avoid downloading and reuploading files. This tool requires buckets that have:
+This guide evolved from a need identified by Tom Lawrence ([Lawrence Systems](https://lawrencesystems.com)) to address S3 version recovery scenarios. Thanks to user jkv on the [Lawrence Systems Forums](https://forums.lawrencesystems.com/t/bulk-point-in-time-restore-from-versioned-b2-or-s3-or-s3-compatible-object-storage/23721) for highlighting the rclone approach.
 
-- Versioning enabled
-- Previous versions still intact
-- Files in a deleted state with previous versions available
+## Recovery Options
 
-## Primary Use Case
+### 1. Point-in-Time Recovery with rclone
 
-This tool was developed in response to a need identified by Tom Lawrence ([Lawrence Systems](https://lawrencesystems.com)) to address scenarios where files become inaccessible but their versions are still intact. This specifically helps in situations where backup credentials can delete files but can't permanently remove them due to object lock and versioning being enabled.
+Best for scenarios where:
 
-When files are marked as deleted but not permanently removed, TrueNAS cloud sync can't "see" these files directly anymore. This script helps recover from such situations (whether caused by user error, malicious action, or otherwise) by simply removing the delete markers, making the files visible to TrueNAS again.
+- Files have been overwritten or deleted
+- You need to recover the entire bucket or specific paths
+- You want to download files to your local system for verification
+- You want to bypass TrueNAS Cloud Sync entirely for recovery
 
-## Features
+For detailed instructions on setting up rclone with your S3-compatible service, see the [rclone S3 documentation](https://rclone.org/s3/).
 
-- Restores deleted files by removing delete markers
-- Works with multiple S3-compatible services (AWS S3, B2, Storj, etc.)
-- Supports restoring entire buckets or specific paths
-- Dry-run mode to preview what would be restored
-- Detailed file information including sizes and timestamps
-- Path-specific restoration support
-
-## Prerequisites
-
-### Python Requirements
-
-- Python 3.9 or higher
-- boto3 (`pip install boto3`)
-
-### Account Requirements
-
-- S3-compatible account with API access
-- Access credentials with appropriate permissions (varies by service):
-  - List buckets (may be a separate permission)
-  - List files and their versions
-  - Delete objects or versions (for removing delete markers)
-  - Read file metadata
-- Note: Permission names and structures vary between services. For example, AWS S3 and Backblaze B2 use different permission models.
-
-## Environment Setup
-
-The script requires two environment variables:
+While rclone provides specific commands for services like B2 and Storj, we use the generic S3 commands here as they work across all S3-compatible services when configured with the appropriate endpoint URLs (see service-specific examples in the [s3-restore-deleted](s3-restore-deleted.md) documentation).
 
 ```bash
-export S3_ACCESS_KEY_ID='your_access_key_id'
-export S3_SECRET_ACCESS_KEY='your_secret_access_key'
+# List files as they existed at a specific time
+rclone ls remote:bucket --s3-version-at "2024-11-01 21:10:00"
+
+# Copy files as they existed at a specific time
+rclone copy remote:bucket/path local/path --s3-version-at "2024-11-01 21:10:00" --progress
 ```
 
-## Usage
+### 2. Quick Undelete with s3-restore-deleted
 
-```bash
-python s3-version-restore.py BUCKET_NAME [options]
-```
+Best for scenarios where:
 
-### Options
+- Files were only deleted (not overwritten)
+- You want to restore access without downloading
+- You need to make files visible to TrueNAS Cloud Sync again
 
-- `--list-buckets`: List all available buckets and exit
-- `--endpoint-url URL`: S3-compatible endpoint URL (required for non-AWS services)
-- `--path PREFIX`: Optional path prefix to restore (e.g., "folder/")
-- `--execute`: Execute the restore operation. Without this flag, performs a dry run
-- `-v, --verbose`: Show detailed information about files to be restored
-
-### Examples
-
-```bash
-# List available buckets
-python s3-version-restore.py --list-buckets --endpoint-url https://s3.us-west-004.backblazeb2.com
-
-# Show deleted files that could be restored
-python s3-version-restore.py my-bucket
-
-# Restore all deleted files in a bucket
-python s3-version-restore.py my-bucket --execute
-
-# Show what would be restored from a specific folder
-python s3-version-restore.py my-bucket --path docs/reports/
-
-# Show detailed information about files to be restored
-python s3-version-restore.py my-bucket -v
-
-# Use with a specific S3-compatible endpoint
-python s3-version-restore.py my-bucket --endpoint-url https://gateway.us1.storjshare.io
-```
-
-## How It Works
-
-1. Connects to the S3-compatible service using your credentials
-2. Verifies bucket versioning is enabled
-3. Lists all versions of files in the specified bucket/path
-4. Identifies files with delete markers
-5. Removes delete markers to expose the previous version
-6. Restores access to previously deleted files
-
-## Important Notes
-
-- The bucket must have versioning enabled and supported
-- Files that were intentionally deleted will be restored when using delete marker removal
-- The path prefix uses prefix matching (e.g., 'docs/' matches both 'docs/file.txt' and 'docs/subfolder/file.txt')
-- By default, runs in dry-run mode showing what would be restored
-- Always shows total size and file count before executing restore
-- Requires explicit confirmation before performing actual restore operations
-- Cannot restore files where all versions have been permanently deleted
-- Testing in a non-production environment is strongly recommended
-
-## Service-Specific Notes
-
-### AWS S3
-
-- Endpoint URL: Not needed (default AWS endpoints will be used)
-- Bucket names are used as-is
-- Example:
-
-  ```bash
-  export S3_ACCESS_KEY_ID='AKIAXXXXXXXXXXXXXXXX'
-  export S3_SECRET_ACCESS_KEY='XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
-  python s3-version-restore.py my-bucket --restore-deleted
-  ```
-
-### Backblaze B2
-
-- Endpoint URL format: https://s3.{region}.backblazeb2.com
-  - Example: https://s3.us-west-000.backblazeb2.com
-- Bucket names must be the full bucket name (not the bucket ID)
-- Example:
-
-  ```bash
-  export S3_ACCESS_KEY_ID='000xxxxxxxxxxxxx0000000001'
-  export S3_SECRET_ACCESS_KEY='K000xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
-  python s3-version-restore.py my-bucket --endpoint-url https://s3.us-west-000.backblazeb2.com --restore-deleted
-  ```
-
-### Storj
-
-- Endpoint URL: https://gateway.storjshare.io
-- Bucket names are used as-is
-- Example:
-
-  ```bash
-  export S3_ACCESS_KEY_ID='jw....................................'
-  export S3_SECRET_ACCESS_KEY='jk............................................'
-  python s3-version-restore.py my-bucket --endpoint-url https://gateway.storjshare.io --restore-deleted
-  ```
-
-## TODO
-
-Ongoing testing and improvements:
-
-### Testing
-
-- [ ] Validate minimum permission sets with each service
-- [ ] Test behavior with network interruptions during large restores
-- [ ] Verify memory usage and performance with 10,000+ file operations
-
-Contributions to help test these scenarios are welcome! See the Contributing section below.
+This repository includes a Python script that performs server-side operations to remove delete markers, restoring access to the previous versions of your files. See [s3-restore-deleted.md](s3-restore-deleted.md) to learn how to use it.
 
 ## Contributing
 

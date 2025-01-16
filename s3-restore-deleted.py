@@ -173,7 +173,7 @@ def restore_versions(s3_client, bucket_name, files_to_restore, dry_run=True, ver
 
 def main():
     parser = argparse.ArgumentParser(
-        description='S3 Version Recovery Tool - Restores deleted files by removing delete markers',
+        description='S3 Quick Undelete Tool - Restores access to deleted files by removing delete markers',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
