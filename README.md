@@ -12,16 +12,35 @@ This guide evolved from a need identified by Tom Lawrence ([Lawrence Systems](ht
 
 ## Recovery Options
 
-### 1. Point-in-Time Recovery with rclone
+### 1. Quick Undelete with s3-restore-deleted
+
+Best for scenarios where:
+
+- Files were only deleted (not overwritten)
+- You want to restore access without downloading
+- You need to make files visible to TrueNAS Cloud Sync again
+
+This repository includes a Python script that performs server-side operations to remove delete markers, restoring access to the previous versions of your files.
+
+This works with both encrypted and unencrypted files since it only restores visibility at the storage level.
+
+See [s3-restore-deleted.md](s3-restore-deleted.md) to learn how to use it.
+
+---
+
+### 2. Point-in-Time Recovery with rclone
 
 Best for scenarios where:
 
 - Files have been overwritten or deleted
 - You need to recover the entire bucket or specific paths
 - You want to download files to your local system for verification
-- You want to bypass TrueNAS Cloud Sync entirely for recovery
 
-For detailed instructions on setting up rclone with your S3-compatible service, see the [rclone S3 documentation](https://rclone.org/s3/).
+For detailed instructions on setting up rclone with your S3-compatible service, see the [rclone S3 documentation](https://rclone.org/s3/). The quickest way to get started is:
+
+```bash
+rclone config
+```
 
 While rclone provides specific commands for services like B2 and Storj, we use the generic S3 commands here as they work across all S3-compatible services when configured with the appropriate endpoint URLs (see service-specific examples in the [s3-restore-deleted](s3-restore-deleted.md) documentation).
 
@@ -33,15 +52,54 @@ rclone ls remote:bucket --s3-version-at "2024-11-01 21:10:00"
 rclone copy remote:bucket/path local/path --s3-version-at "2024-11-01 21:10:00" --progress
 ```
 
-### 2. Quick Undelete with s3-restore-deleted
+---
+
+### 3. Encrypted File Recovery with rclone
 
 Best for scenarios where:
 
-- Files were only deleted (not overwritten)
-- You want to restore access without downloading
-- You need to make files visible to TrueNAS Cloud Sync again
+- Files were encrypted by TrueNAS Cloud Sync
+- You need to recover and decrypt files
+- You have access to the original encryption credentials
 
-This repository includes a Python script that performs server-side operations to remove delete markers, restoring access to the previous versions of your files. See [s3-restore-deleted.md](s3-restore-deleted.md) to learn how to use it.
+If you used `rclone config` as mentioned in option #2 above, you can either:
+
+- Run `rclone config` again to set up a new encrypted remote interactively
+- Manually add an encrypted section to your existing configuration file
+
+For manual configuration, first encode your credentials:
+
+```bash
+# Encode your encryption key
+echo "your-encryption-key" | rclone obscure -
+
+# Encode your salt
+echo "your-encryption-salt" | rclone obscure -
+```
+
+Then add this section to your rclone configuration (typically `~/.config/rclone/rclone.conf`):
+
+```ini
+[encrypted]
+type = crypt
+remote = remote:bucket-name/
+filename_encryption = standard
+password = encoded-encryption-key
+password2 = encoded-encryption-salt
+```
+
+#### Recovery Commands
+
+```bash
+# List encrypted files
+rclone ls encrypted:/path
+
+# Recover files to local storage (automatically decrypted)
+rclone copy encrypted:/path local/path --progress
+
+# Point-in-time recovery of encrypted files
+rclone copy encrypted:/path local/path --s3-version-at "2024-11-01 21:10:00" --progress
+```
 
 ## Contributing
 
