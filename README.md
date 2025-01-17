@@ -30,14 +30,14 @@ Best for: Recovering files, folders, or entire buckets from any point in version
 - Restores from any point in version history
 - Should work with any S3-compatible service
 - Supports both encrypted and unencrypted backups with proper config
-- [Learn more about rclone recovery](rclone-recovery.md)
+- [Learn more about rclone recovery](docs/recovery-guides/rclone-recovery.md)
 
 ## Setting Up for Success
 
 Before disaster strikes:
 
-- [Understand bucket security options and trade-offs](bucket-setup.md)
-- [Configure rclone properly](rclone-setup.md) (including encryption setup)
+- [Understand bucket security options and trade-offs](docs/bucket-setup.md)
+- [Configure rclone properly](docs/rclone-setup.md) (including encryption setup)
 
 ## Quick Start
 
