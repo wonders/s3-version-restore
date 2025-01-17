@@ -1,106 +1,65 @@
 # S3 Version Recovery Reference
 
-## The Scenario
+A practical guide for protecting and recovering data when using S3-compatible storage (like Backblaze B2 or Storj) with TrueNAS Cloud Sync or other rclone-based backup tools.
 
-When files become inaccessible (whether through compromised credentials, accidental deletion, or backup system issues), proper object lock configuration can prevent permanent data loss by preserving previous versions. However, tools like TrueNAS Cloud Sync can't directly access these previous versions, creating a recovery challenge.
+## The Challenge
 
-This guide provides approaches to recover access to versioned files in S3-compatible storage by restoring from a point in time or restoring visibility to deleted files.
+When using S3-compatible storage for backups:
+
+- Compromised credentials could lead to data loss
+- Syncing tools like TrueNAS Cloud Sync can't directly access previous versions
+- Protection and recovery options vary by storage provider
+- Object lock and versioning settings have important implications
+
+## Available Recovery Methods
+
+### 🔄 Quick Undelete
+
+Best for: Restoring deleted files without downloading directly from storage
+
+- Files were only deleted (not overwritten)
+- You need to make files visible to TrueNAS Cloud Sync again
+- This repository includes a Python script that performs server-side operations to remove delete markers, restoring access to previous versions of your files
+- Works with both encrypted and unencrypted files since it only restores visibility at the storage level
+- [Learn more about quick undelete](docs/recovery-guides/quick-undelete.md)
+
+### ⏱️ Recovery with rclone
+
+Best for: Recovering files, folders, or entire buckets from any point in version history
+
+- Restores from any point in version history
+- Should work with any S3-compatible service
+- Supports both encrypted and unencrypted backups with proper config
+- [Learn more about rclone recovery](rclone-recovery.md)
+
+## Setting Up for Success
+
+Before disaster strikes:
+
+- [Understand bucket security options and trade-offs](bucket-setup.md)
+- [Configure rclone properly](rclone-setup.md) (including encryption setup)
+
+## Quick Start
+
+For common scenarios:
+
+```bash
+# Quick undelete with provided script
+python scripts/s3-restore-deleted.py my-bucket
+
+# Point-in-time recovery with rclone
+rclone copy remote:bucket/path local/path --s3-version-at "2024-01-17 21:10:00"
+```
 
 ## Community Origins
 
 This guide evolved from a need identified by Tom Lawrence ([Lawrence Systems](https://lawrencesystems.com)) to address S3 version recovery scenarios. Thanks to user jkv on the [Lawrence Systems Forums](https://forums.lawrencesystems.com/t/bulk-point-in-time-restore-from-versioned-b2-or-s3-or-s3-compatible-object-storage/23721) for highlighting the rclone approach.
 
-## Recovery Options
-
-### 1. Quick Undelete with s3-restore-deleted
-
-Best for scenarios where:
-
-- Files were only deleted (not overwritten)
-- You want to restore access without downloading
-- You need to make files visible to TrueNAS Cloud Sync again
-
-This repository includes a Python script that performs server-side operations to remove delete markers, restoring access to the previous versions of your files.
-
-This works with both encrypted and unencrypted files since it only restores visibility at the storage level.
-
-See [s3-restore-deleted.md](s3-restore-deleted.md) to learn how to use it.
-
----
-
-### 2. Point-in-Time Recovery with rclone
-
-Best for scenarios where:
-
-- Files have been overwritten or deleted
-- You need to recover the entire bucket or specific paths
-- You want to download files to your local system for verification
-
-For detailed instructions on setting up rclone with your S3-compatible service, see the [rclone S3 documentation](https://rclone.org/s3/). The quickest way to get started is:
-
-```bash
-rclone config
-```
-
-While rclone provides specific commands for services like B2 and Storj, we use the generic S3 commands here as they work across all S3-compatible services when configured with the appropriate endpoint URLs (see service-specific examples in the [s3-restore-deleted](s3-restore-deleted.md) documentation).
-
-```bash
-# List files as they existed at a specific time
-rclone ls remote:bucket --s3-version-at "2024-11-01 21:10:00"
-
-# Copy files as they existed at a specific time
-rclone copy remote:bucket/path local/path --s3-version-at "2024-11-01 21:10:00" --progress
-```
-
----
-
-### 3. Encrypted File Recovery with rclone
-
-Best for scenarios where:
-
-- Files were encrypted by TrueNAS Cloud Sync
-- You need to recover and decrypt files
-- You have access to the original encryption credentials
-
-If you used `rclone config` as mentioned in option #2 above, you can either:
-
-- Run `rclone config` again to set up a new encrypted remote interactively
-- Manually add an encrypted section to your existing configuration file
-
-For manual configuration, first encode your credentials:
-
-```bash
-# Encode your encryption key
-echo "your-encryption-key" | rclone obscure -
-
-# Encode your salt
-echo "your-encryption-salt" | rclone obscure -
-```
-
-Then add this section to your rclone configuration (typically `~/.config/rclone/rclone.conf`):
-
-```ini
-[encrypted]
-type = crypt
-remote = remote:bucket-name/
-filename_encryption = standard
-password = encoded-encryption-key
-password2 = encoded-encryption-salt
-```
-
-#### Recovery Commands
-
-```bash
-# List encrypted files
-rclone ls encrypted:/path
-
-# Recover files to local storage (automatically decrypted)
-rclone copy encrypted:/path local/path --progress
-
-# Point-in-time recovery of encrypted files
-rclone copy encrypted:/path local/path --s3-version-at "2024-11-01 21:10:00" --progress
-```
-
 ## Contributing
 
-Contributions are welcome! Please submit pull requests or report issues on GitHub.
+Issues and pull requests are welcome! Please help us expand this knowledge base with:
+
+- Additional recovery scenarios
+- New protection strategies
+- Service-specific notes
+- Configuration examples
